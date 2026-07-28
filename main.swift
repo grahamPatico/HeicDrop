@@ -4,6 +4,23 @@
 //  Pure AppKit, single file, no Xcode project, no third-party deps.
 //  Build with ./build.sh
 //
+//  Map of this file, top to bottom:
+//
+//    Preferences   Destination / OutputFormat / SizePreset enums, Prefs (UserDefaults)
+//    LoginItem     SMAppService wrapper (Start at Login)
+//    Converter     the encode core — two paths, shared by GUI and CLI:
+//                    fast:  AddImageFromSource (Actual size + keep metadata; bytes of
+//                           EXIF/XMP/orientation pass through untouched)
+//                    slow:  CreateThumbnailAtIndex WithTransform (resize and/or strip;
+//                           bakes EXIF orientation into the pixels, tag reset to 1)
+//    CLI mode      --convert / --login-status etc.; runs headless before NSApplication,
+//                  and doubles as the test harness (see README "Headless mode")
+//    DropView      the status-item overlay: drag destination AND sole click router
+//    PopoverController  the entire UI — one popover, idle state (settings) or
+//                  files state (pending conversion)
+//    AppController status item, popover plumbing, login auto-register, the three
+//                  conversion actions (save to folder / in place + Trash / clipboard)
+//
 
 import AppKit
 import CoreGraphics
@@ -91,7 +108,7 @@ enum SizePreset: String {
     }
 
     /// Size-row order — biggest first, which is what people scan for.
-    static let askOrder: [SizePreset] = [.actual, .large, .medium, .small]
+    static let displayOrder: [SizePreset] = [.actual, .large, .medium, .small]
 
     /// Resulting pixel dimensions for an image of `size` (already orientation-corrected).
     /// Never upscales.
@@ -485,6 +502,13 @@ struct BatchResult {
 
 // MARK: - Drag destination view
 
+/// Transparent overlay filling the status-item button. It has two jobs, and both are
+/// load-bearing:
+///
+/// 1. Drag destination — the button itself cannot register for dragged types.
+/// 2. Sole click router — because this view sits on top of the button, it receives every
+///    mouse event first, so the button's own target/action is deliberately left unwired
+///    (wiring both would fire twice). Left/right clicks forward to the controller.
 final class DropView: NSView {
     weak var controller: AppController?
 
@@ -549,6 +573,10 @@ final class PopoverController: NSViewController {
     private static let padding: CGFloat = 14
     private static let innerWidth: CGFloat = contentWidth - 2 * padding
 
+    /// Above this many files the size rows stop encoding for byte estimates and
+    /// degrade to "max N px" labels.
+    static let byteEstimateFileLimit = 5
+
     weak var app: AppController?
 
     private(set) var files: [URL] = []
@@ -594,7 +622,7 @@ final class PopoverController: NSViewController {
 
     /// True when the size rows carry real per-file numbers.
     private var estimatesApply: Bool {
-        !files.isEmpty && files.count <= AppController.byteEstimateFileLimit
+        !files.isEmpty && files.count <= PopoverController.byteEstimateFileLimit
     }
 
     /// Load the popover with `urls` ([] = idle) and rebuild the whole content.
@@ -820,11 +848,11 @@ final class PopoverController: NSViewController {
         column.spacing = 3
 
         sizeButtons = []
-        for preset in SizePreset.askOrder {
+        for preset in SizePreset.displayOrder {
             let button = NSButton(radioButtonWithTitle: sizeRowTitle(preset),
                                   target: self,
                                   action: #selector(sizeChanged(_:)))
-            button.tag = SizePreset.askOrder.firstIndex(of: preset) ?? 0
+            button.tag = SizePreset.displayOrder.firstIndex(of: preset) ?? 0
             button.state = (preset == selectedSize) ? .on : .off
             sizeButtons.append(button)
             column.addArrangedSubview(button)
@@ -862,8 +890,8 @@ final class PopoverController: NSViewController {
     }
 
     private func updateSizeTitles() {
-        for (index, button) in sizeButtons.enumerated() where index < SizePreset.askOrder.count {
-            button.title = sizeRowTitle(SizePreset.askOrder[index])
+        for (index, button) in sizeButtons.enumerated() where index < SizePreset.displayOrder.count {
+            button.title = sizeRowTitle(SizePreset.displayOrder[index])
         }
     }
 
@@ -884,7 +912,7 @@ final class PopoverController: NSViewController {
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var totals: [SizePreset: Int] = [:]
-            for preset in SizePreset.askOrder {
+            for preset in SizePreset.displayOrder {
                 var total = 0
                 var ok = true
                 for url in urls {
@@ -987,8 +1015,8 @@ final class PopoverController: NSViewController {
     }
 
     @objc private func sizeChanged(_ sender: NSButton) {
-        guard sender.tag >= 0, sender.tag < SizePreset.askOrder.count else { return }
-        selectedSize = SizePreset.askOrder[sender.tag]
+        guard sender.tag >= 0, sender.tag < SizePreset.displayOrder.count else { return }
+        selectedSize = SizePreset.displayOrder[sender.tag]
         for button in sizeButtons { button.state = (button === sender) ? .on : .off }
         if isIdle { Prefs.sizePreset = selectedSize }
     }
@@ -1100,9 +1128,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var popoverController: PopoverController?
     private var conversionStarted = false
     private var lastPopoverCloseTime: Date?
-
-    /// Above this many files the popover stops encoding for byte estimates.
-    static let byteEstimateFileLimit = 5
 
     // MARK: Lifecycle
 

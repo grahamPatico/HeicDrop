@@ -1,8 +1,14 @@
 # HeicDrop
 
 A tiny macOS menu bar utility that converts images. Drag files onto the menu bar icon, a
-small panel opens under it, pick what you want, done. HEIC/HEIF in, JPEG (or PNG, or HEIF)
-out, optionally resized and stripped of metadata.
+small panel opens under it, pick what you want, done.
+
+- **In**: HEIC/HEIF primarily, but anything ImageIO can read — PNG, TIFF, WebP, JPEG
+- **Out**: JPEG, PNG, or HEIF
+- **Size presets** that show the *real* output dimensions and file sizes before you convert
+- **Remove metadata** — strips EXIF, GPS, timestamps, XMP (and keeps the photo upright)
+- **Destinations**: a folder of your choice, same-folder-and-Trash-the-original, or the clipboard
+- **Start at Login**, one checkbox
 
 No Dock icon, no windows, no preferences pane. Pure AppKit in a single `main.swift`,
 built with `swiftc`. No Xcode project, no SwiftUI, no third-party dependencies.
@@ -15,7 +21,7 @@ file has been written successfully.
 
 Grab `HeicDrop.zip` from the [latest release](../../releases/latest), unzip it, and move
 `HeicDrop.app` to `/Applications` (or anywhere). The release build is Apple Silicon
-(arm64); on an Intel Mac, build from source below — it takes a few seconds.
+(arm64); on an Intel Mac, [build from source](#build-from-source) — it takes a few seconds.
 
 The app is ad-hoc signed, not notarized, so on first open macOS will refuse it with
 "cannot be opened" or "damaged". Two ways past that, pick one:
@@ -34,25 +40,6 @@ Each release lists the zip's SHA-256 so you can check what you downloaded:
 shasum -a 256 ~/Downloads/HeicDrop.zip
 ```
 
-## Build
-
-```sh
-./build.sh
-```
-
-This compiles `main.swift`, assembles `HeicDrop.app`, and ad-hoc signs it. The app lands
-next to the source at `HeicDrop.app`. Move it wherever you like (`/Applications` is fine)
-and double-click to run.
-
-Requires macOS 13.0 or later. The binary is built for the host architecture.
-
-Because the signature is ad-hoc rather than a Developer ID, macOS may complain the first
-time you open it. Right-click the app and choose Open, or clear the quarantine flag:
-
-```sh
-xattr -dr com.apple.quarantine HeicDrop.app
-```
-
 ## Using it
 
 The icon sits in the menu bar. Everything happens in one popover under it.
@@ -68,10 +55,7 @@ multi-select open panel instead of dragging.
 **Right-click the icon.** A minimal escape-hatch menu: **Quality** (80% / 90% / 100%) and
 **Quit HeicDrop**. Quality is the one setting deliberately left out of the popover.
 
-Primary targets are `.heic` and `.heif`, but anything ImageIO can read is accepted,
-including PNG, TIFF, and WebP.
-
-## The popover
+### The popover
 
 With files pending, top to bottom:
 
@@ -136,9 +120,10 @@ output folder is the exception — picking one in `Choose Folder…` saves it im
 either way.
 
 Conversions run on a background queue, so the popover closes at once and a big batch never
-freezes anything. The completion sound tells you when it is done.
+freezes anything. The completion sound tells you when it is done: Glass if everything
+succeeded, Basso if anything failed.
 
-## Start at Login
+### Start at Login
 
 The popover footer has a **Start at Login** checkbox, backed by `SMAppService.mainApp`
 (the modern `ServiceManagement` login-item API, macOS 13+). The first time the GUI ever
@@ -150,19 +135,22 @@ was last asked for. If macOS refuses the registration — most often "Login Item
 needs your approval in System Settings — the box goes back to its real state and the error
 is logged to stderr rather than crashing.
 
-The status is also readable from the command line, which is how the build is verified:
+## Build from source
 
 ```sh
-HeicDrop.app/Contents/MacOS/HeicDrop --login-status    # enabled|notRegistered|requiresApproval|notFound
-HeicDrop.app/Contents/MacOS/HeicDrop --enable-login     # register, print resulting status
-HeicDrop.app/Contents/MacOS/HeicDrop --disable-login    # unregister, print resulting status
+./build.sh
 ```
 
-`--login-status` always exits 0. `--enable-login` / `--disable-login` exit 0 on success and
-1 if the call threw, printing the status either way. Run them from the binary *inside* the
-`.app` bundle — `SMAppService` identifies the login item by its bundle.
+This compiles `main.swift` for the host architecture, assembles `HeicDrop.app`, and ad-hoc
+signs it. The app lands next to the source; move it wherever you like and double-click to
+run. Requires macOS 13.0 or later and the Xcode Command Line Tools (for `swiftc`).
 
-## Settings storage
+A locally built app has no quarantine flag, so none of the Gatekeeper steps from the
+Download section apply.
+
+## Reference
+
+### Settings storage
 
 `UserDefaults` keys: `destination`, `outputFolder`, `jpegQuality`, `outputFormat`,
 `sizePreset`, `stripMetadata`, and `didAutoRegisterLogin`.
@@ -173,7 +161,7 @@ than the preset are left alone rather than upscaled. The 320 / 640 / 1280 figure
 Apple Mail convention. Quality defaults to 90%, applies to JPEG and HEIF, and is simply not
 passed to the PNG encoder because PNG is lossless. The output folder defaults to `~/Desktop`.
 
-## Conversion details
+### Conversion details
 
 Everything goes through ImageIO, and file writes and clipboard copies share one encode
 path. There are two branches:
@@ -200,12 +188,11 @@ bitmap (colour space and pixel dimensions, and for some JPEG inputs an empty Pho
 block). "Remove metadata" removes everything that came from the source — camera, software,
 timestamps, GPS, XMP — but the output is not guaranteed to be literally marker-free.
 
-Files that fail to open are skipped rather than aborting the batch. On completion the app
-plays the Glass system sound if everything succeeded, or Basso if anything failed. There
-are no notification-center notifications — they require a permission prompt that is more
-trouble than it is worth for an unsigned app.
+Files that fail to open are skipped rather than aborting the batch. There are no
+notification-center notifications — they require a permission prompt that is more trouble
+than it is worth for an unsigned app.
 
-## Headless mode
+### Headless mode
 
 The same conversion path is reachable from the command line without any GUI, which is how
 the build is verified:
@@ -223,10 +210,9 @@ HeicDrop.app/Contents/MacOS/HeicDrop --convert <input> [options]
 | `--strip` | bare flag, removes metadata | the stored Remove metadata |
 
 Flags override the stored settings for that run only; nothing is written back to
-`UserDefaults`. The output extension follows `--format` (`jpg` / `png` / `heic`).
-
-It prints the output path and exits 0 on success, or prints the error to stderr and exits
-1 on failure.
+`UserDefaults`. The output extension follows `--format` (`jpg` / `png` / `heic`). It prints
+the output path and exits 0 on success, or prints the error to stderr and exits 1 on
+failure.
 
 ```
 $ HeicDrop.app/Contents/MacOS/HeicDrop --convert test.heic --out ./out
@@ -235,3 +221,19 @@ $ HeicDrop.app/Contents/MacOS/HeicDrop --convert test.heic --out ./out
 $ HeicDrop.app/Contents/MacOS/HeicDrop --convert test.heic --out ./out --format png --size medium --strip
 ./out/test.png
 ```
+
+The login item is scriptable the same way. Run these against the binary *inside* the
+`.app` bundle — `SMAppService` identifies the login item by its bundle:
+
+```sh
+HeicDrop.app/Contents/MacOS/HeicDrop --login-status    # enabled|notRegistered|requiresApproval|notFound
+HeicDrop.app/Contents/MacOS/HeicDrop --enable-login    # register, print resulting status
+HeicDrop.app/Contents/MacOS/HeicDrop --disable-login   # unregister, print resulting status
+```
+
+`--login-status` always exits 0. `--enable-login` / `--disable-login` exit 0 on success and
+1 if the call threw, printing the status either way.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
