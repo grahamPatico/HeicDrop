@@ -1,0 +1,6 @@
+# Build artifacts — rebuilt by ./build.sh
+/HeicDrop
+/HeicDrop.app/
+*.zip
+
+.DS_Store
